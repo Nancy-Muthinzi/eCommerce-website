@@ -3,6 +3,7 @@ from django.conf import settings
 from django.contrib import messages
 from cart.models import Order, Cart
 from . models import BillingForm, BillingAddress
+from django.utils.crypto import get_random_string
 
 # Create your views here.
 
@@ -40,3 +41,58 @@ def checkout(request):
                 billingaddress.save()
 
     return render(request, 'checkout/index.html', context)
+
+
+def payment(request):
+    key = settings.STRIPE_PUBLISHABLE_KEY
+    order_qs = Order.objects.filter(user=request.user, ordered=False)
+    order_total = order_qs[0].get_totals()
+    totalCents = float(order_total * 100)
+    total = round(totalCents, 2)
+    if request.method == 'POST':
+        charge = stripe.Charge.create(amount=total,
+                                      currency='usd',
+                                      description=order_qs,
+                                      source=request.POST['stripeToken'])
+        print(charge)
+
+    return render(request, 'checkout/payment.html', {"key": key, "total": total})
+
+
+def charge(request):
+    order = Order.objects.get(user=request.user, ordered=False)
+    orderitems = order.orderitems.all()
+    order_total = order.get_totals()
+    totalCents = int(float(order_total * 100))
+    if request.method == 'POST':
+        charge = stripe.Charge.create(amount=totalCents,
+                                      currency='inr',
+                                      description=order,
+                                      source=request.POST['stripeToken'])
+        print(charge)
+        if charge.status == "succeeded":
+            orderId = get_random_string(
+                length=16, allowed_chars=u'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+            print(charge.id)
+            order.ordered = True
+            order.paymentId = charge.id
+            order.orderId = f'#{request.user}{orderId}'
+            order.save()
+            cartItems = Cart.objects.filter(user=request.user)
+            for item in cartItems:
+                item.purchased = True
+                item.save()
+        return render(request, 'checkout/charge.html', {"items": orderitems, "order": order})
+
+
+def orderView(request):
+
+    try:
+        orders = Order.objects.filter(user=request.user, ordered=True)
+        context = {
+            "orders": orders
+        }
+    except:
+        messages.warning(request, "You do not have an active order")
+        return redirect('/')
+    return render(request, 'checkout/order.html', context)
